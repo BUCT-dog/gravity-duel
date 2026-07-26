@@ -569,20 +569,38 @@ function copyCode() {
 }
 
 function copyText(text) {
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
-  } else {
-    fallbackCopy(text);
-  }
-}
+  let done = false;
 
-function fallbackCopy(text) {
-  const ta = document.createElement('textarea');
-  ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
-  document.body.appendChild(ta);
-  ta.focus(); ta.select();
-  document.execCommand('copy');
-  document.body.removeChild(ta);
+  // 方法1: 现代 Clipboard API（限时1秒）
+  if (navigator.clipboard?.writeText) {
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 1000));
+    Promise.race([navigator.clipboard.writeText(text), timeout]).then(() => {
+      done = true;
+    }).catch(() => {});
+  }
+
+  // 方法2: execCommand（延迟300ms给 API 机会，如果 API 没回应就走这条路）
+  setTimeout(() => {
+    if (done) return;
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:50%;left:50%;width:1px;height:1px;opacity:0;pointer-events:none;';
+    ta.setAttribute('readonly', '');
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, 999999);
+    try {
+      document.execCommand('copy');
+      done = true;
+    } catch (e) {}
+    document.body.removeChild(ta);
+
+    // 方法3: 弹窗手动复制（还没成功的话）
+    if (!done) {
+      prompt('复制下面的内容（会自动选中）：', text);
+    }
+  }, 300);
 }
 
 function leaveWait() {
