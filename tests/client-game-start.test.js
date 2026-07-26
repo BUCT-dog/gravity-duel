@@ -60,7 +60,14 @@ class FakeWebSocket {
   close() {}
 }
 
-function loadClient() {
+function loadClient({
+  width = 1200,
+  height = 700,
+  userAgent = 'node-test',
+  hostname = 'localhost',
+  host = 'localhost:3000',
+  origin = 'http://localhost:3000',
+} = {}) {
   const htmlPath = path.join(__dirname, '..', 'public', 'index.html');
   const html = fs.readFileSync(htmlPath, 'utf8');
   const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)];
@@ -94,8 +101,8 @@ function loadClient() {
   const storage = new Map();
   const body = makeElement();
   const windowObject = {
-    innerWidth: 1200,
-    innerHeight: 700,
+    innerWidth: width,
+    innerHeight: height,
     addEventListener() {},
   };
   windowObject.window = windowObject;
@@ -112,11 +119,12 @@ function loadClient() {
       createElement: () => makeElement(),
       execCommand: () => true,
     },
-    navigator: { userAgent: 'node-test' },
+    navigator: { userAgent },
     location: {
       protocol: 'http:',
-      host: 'localhost:3000',
-      origin: 'http://localhost:3000',
+      hostname,
+      host,
+      origin,
       search: '',
     },
     sessionStorage: {
@@ -134,8 +142,31 @@ function loadClient() {
   windowObject.AudioContext = undefined;
   windowObject.webkitAudioContext = undefined;
   vm.runInNewContext(clientScript, sandbox, { filename: htmlPath });
-  return { elements, socket: FakeWebSocket.latest };
+  return { body, elements, socket: FakeWebSocket.latest };
 }
+
+test('local page warns that its rooms cannot be joined from a phone', () => {
+  const { elements } = loadClient();
+  const warning = elements.get('serverScope');
+
+  assert.equal(warning.classList.contains('local'), true);
+  assert.match(warning.textContent, /手机无法加入/);
+  assert.match(warning.textContent, /Railway 公网网址/);
+});
+
+test('mobile portrait layout fills the dynamic viewport instead of shrinking the game', () => {
+  const { body, elements } = loadClient({
+    width: 390,
+    height: 844,
+    userAgent: 'iPhone',
+  });
+  const app = elements.get('app');
+
+  assert.equal(body.classList.contains('mobile'), true);
+  assert.equal(app.style.width, '100vw');
+  assert.equal(app.style.height, '100dvh');
+  assert.equal(app.style.transform, 'none');
+});
 
 test('host waiting overlay closes when the game starts', () => {
   const { elements, socket } = loadClient();

@@ -248,7 +248,7 @@ wss.on('connection', (ws) => {
       case 'join_room': {
         const code = msg.roomId?.toUpperCase?.() || '';
         const room = rooms.get(code);
-        if (!room) { ws.send(JSON.stringify({ type: 'error', message: '房间不存在，请检查房间码' })); return; }
+        if (!room) { ws.send(JSON.stringify({ type: 'error', message: '房间不存在。请确认电脑和手机打开的是同一个公网网址，并检查房间码' })); return; }
         if (room.players.length >= 2) { ws.send(JSON.stringify({ type: 'error', message: '房间已满' })); return; }
         if (room.state !== 'waiting') { ws.send(JSON.stringify({ type: 'error', message: '游戏已开始，无法加入' })); return; }
 

@@ -70,9 +70,15 @@
     pointer-events: none;
     transition: none;
   }
-  .mobile #joystickZone { display: block; }
-  .mobile #joystickBase { display: block; }
-  .mobile #joystickThumb { display: block; }
+  .mobile #app {
+    width: 100vw; height: 100dvh;
+    max-width: none; max-height: none;
+    transform: none;
+  }
+  .mobile canvas { border-radius: 0; }
+  .mobile.game-active #joystickZone,
+  .mobile.game-active #joystickBase,
+  .mobile.game-active #joystickThumb { display: block; }
 
   /* === 覆盖层 === */
   .overlay {
@@ -199,6 +205,17 @@
   }
   .tips span { color: rgba(255,255,255,0.4); }
 
+  .server-scope {
+    margin: 14px 0 2px; padding: 9px 12px;
+    border: 1px solid rgba(92,214,180,0.18); border-radius: 12px;
+    background: rgba(92,214,180,0.07); color: rgba(196,255,237,0.75);
+    font-size: 11px; line-height: 1.55; letter-spacing: 0.02em;
+  }
+  .server-scope.local {
+    border-color: rgba(249,199,79,0.32);
+    background: rgba(249,199,79,0.09); color: #ffe29a;
+  }
+
   .hidden { display: none !important; }
 
   /* === 手机专用提示 === */
@@ -208,7 +225,26 @@
     font-size: 11px; color: rgba(255,255,255,0.3);
     pointer-events: none; text-align: right; line-height: 1.6;
   }
-  .mobile #mobileHint { display: block; }
+  .mobile.game-active #mobileHint { display: block; }
+
+  @media (max-width: 600px) {
+    .panel { width: calc(100% - 24px); padding: 24px 20px; border-radius: 18px; }
+    .panel h1 { font-size: 24px; }
+    .panel .icon { font-size: 34px; }
+    .hp-row { min-width: 96px; gap: 4px; }
+    .hp-track { width: 68px; }
+    .hp-label { font-size: 10px; }
+    #hud {
+      top: max(10px, env(safe-area-inset-top));
+      padding: 0 max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+    }
+    #timerDisplay { min-width: 46px; font-size: 19px; }
+    #connBadge { top: max(46px, calc(env(safe-area-inset-top) + 38px)); right: 12px; }
+    #joystickBase { width: 116px; height: 116px; bottom: max(24px, env(safe-area-inset-bottom)); left: 24px; }
+    #joystickThumb { width: 52px; height: 52px; }
+    #mobileHint { bottom: max(16px, env(safe-area-inset-bottom)); right: 14px; }
+    #toast { width: 86%; font-size: 24px; }
+  }
 </style>
 </head>
 <body>
@@ -248,6 +284,7 @@
     <div class="panel">
       <h1><span class="icon">🪐</span>引力对决</h1>
       <div class="sub">操纵行星引力场，甩陨石摧毁对手！</div>
+      <div class="server-scope" id="serverScope"></div>
       <button class="btn btn-primary btn-block" id="btnCreate" onclick="createRoom()">🎮 创建房间</button>
       <div style="margin:10px 0;color:rgba(255,255,255,0.2);font-size:12px;">— 或输入房间码加入 —</div>
       <div class="input-row">
@@ -303,17 +340,30 @@ const app       = document.getElementById('app');
 const joystickBase  = document.getElementById('joystickBase');
 const joystickThumb = document.getElementById('joystickThumb');
 const joystickZone  = document.getElementById('joystickZone');
+const serverScope   = document.getElementById('serverScope');
 
 // ===== 检测移动端 =====
 const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ||
-                 ('ontouchstart' in window && window.innerWidth < 1024);
+                 ('ontouchstart' in window && window.innerWidth < 1024) ||
+                 window.innerWidth <= 600;
+const isLocalServer = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+serverScope.textContent = isLocalServer
+  ? '⚠ 本机房间：手机无法加入。联机时电脑和手机都要打开同一个 Railway 公网网址。'
+  : `🌐 公网联机 · 两台设备须打开同一网址：${location.host}`;
+serverScope.classList.toggle('local', isLocalServer);
+
+function fitMobileViewport() {
+  if (!isMobile) return;
+  app.style.width = '100vw';
+  app.style.height = '100dvh';
+  app.style.maxWidth = 'none';
+  app.style.maxHeight = 'none';
+  app.style.transform = 'none';
+}
+
 if (isMobile) {
   document.body.classList.add('mobile');
-  // 缩放适配手机屏幕
-  const scale = Math.min(window.innerWidth / W, window.innerHeight / H) * 0.95;
-  app.style.width = W + 'px';
-  app.style.height = H + 'px';
-  app.style.transform = `scale(${scale})`;
+  fitMobileViewport();
 }
 
 // ===== 状态 =====
@@ -411,10 +461,7 @@ function resetThumb() {
 
 // 窗口大小变化时更新摇杆位置
 window.addEventListener('resize', () => {
-  if (isMobile) {
-    const scale = Math.min(window.innerWidth / W, window.innerHeight / H) * 0.95;
-    app.style.transform = `scale(${scale})`;
-  }
+  fitMobileViewport();
   if (joystickActive) updateJoystickUI();
 });
 
@@ -468,6 +515,8 @@ function connectWS() {
         waitOv.classList.add('hidden');
         endOv.classList.remove('active');
         endOv.classList.add('hidden');
+        document.body.classList.add('game-active');
+        if (isMobile) requestAnimationFrame(() => { updateJoystickUI(); resetThumb(); });
         effects = []; screenShake = 0; trailHistory = [];
         showToast(myNum === 1 ? '🔵 蓝色行星' : '🔴 红色行星');
         break;
@@ -501,6 +550,7 @@ function connectWS() {
       case 'opponent_disconnected':
         showToast('对手断开了连接');
         setTimeout(() => {
+          document.body.classList.remove('game-active');
           endPanel.innerHTML = '<h1>🏆</h1><p style="font-size:18px;">对手断开连接</p><p style="color:var(--dim);">你赢了！</p><button class="btn btn-primary btn-block" onclick="backToMenu()">返回大厅</button>';
           endOv.classList.remove('hidden'); endOv.classList.add('active'); hud.classList.add('hidden');
         }, 2000);
@@ -606,6 +656,7 @@ function copyText(text) {
 function leaveWait() {
   if (ws) { ws.close(); ws = null; }
   gs = null; myRoom = ''; myNum = 0;
+  document.body.classList.remove('game-active');
   hud.classList.add('hidden'); waitOv.classList.add('hidden');
   menuOv.classList.remove('hidden');
   sessionStorage.removeItem('myRoom'); sessionStorage.removeItem('myNum');
@@ -615,6 +666,7 @@ function leaveWait() {
 function backToMenu() {
   if (ws) { ws.close(); ws = null; }
   gs = null; myRoom = ''; myNum = 0;
+  document.body.classList.remove('game-active');
   hud.classList.add('hidden'); waitOv.classList.add('hidden');
   endOv.classList.remove('active'); endOv.classList.add('hidden'); menuOv.classList.remove('hidden');
   sessionStorage.removeItem('myRoom'); sessionStorage.removeItem('myNum');
@@ -630,6 +682,7 @@ function rematch() {
 }
 
 function showEnd(winner) {
+  document.body.classList.remove('game-active');
   hud.classList.add('hidden'); endOv.classList.remove('hidden'); endOv.classList.add('active');
   const m = { win: ['🎉','你赢了！','引力至尊！','var(--gold)'],
               lose:['💀','你输了','再来一局！',''],
