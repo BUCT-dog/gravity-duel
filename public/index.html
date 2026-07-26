@@ -424,7 +424,7 @@
       const W = GM.WORLD_WIDTH;
       const H = GM.WORLD_HEIGHT;
       const MAX_HP = 5;
-      const SNAPSHOT_MS = 50;
+      const SNAPSHOT_MS = 72;
       const app = document.getElementById('app');
       const canvas = document.getElementById('c');
       const ctx = canvas.getContext('2d');
@@ -741,17 +741,24 @@
       function reconcilePrediction(snapshot) {
         const authoritative = snapshot.players?.find(player => player.n === playerNumber);
         if (!authoritative) return;
-        const lead = Math.min(0.1, Math.max(0, rtt / 2000 + 0.025));
+        // 前瞻量 = RTT/2（补偿单向延迟），上限 200ms，下限 33ms
+        const lead = GM.clamp(rtt / 2000, 0.033, 0.2);
         const target = GM.integratePosition(authoritative, keys, lead);
-        if (!predictedPosition || Math.hypot(
-          target.x - predictedPosition.x,
-          target.y - predictedPosition.y,
-        ) > 90) {
+        if (!predictedPosition) {
           predictedPosition = target;
           return;
         }
-        predictedPosition.x = GM.lerp(predictedPosition.x, target.x, 0.36);
-        predictedPosition.y = GM.lerp(predictedPosition.y, target.y, 0.36);
+        const error = Math.hypot(target.x - predictedPosition.x, target.y - predictedPosition.y);
+        if (error > 60) {
+          // 偏差过大（瞬移/断线恢复）→ 直接跳转
+          predictedPosition = target;
+        } else if (error > 8) {
+          // 正常偏差 → 平滑修正（因子随 RTT 自适应）
+          const factor = GM.clamp(0.08 + rtt / 8000, 0.08, 0.25);
+          predictedPosition.x = GM.lerp(predictedPosition.x, target.x, factor);
+          predictedPosition.y = GM.lerp(predictedPosition.y, target.y, factor);
+        }
+        // 偏差 < 8px 不修正（避免微小抖动）
       }
 
       function updateHud(snapshot) {
@@ -827,7 +834,18 @@
       });
       window.addEventListener('blur', resetInput);
       window.addEventListener('resize', updateLayout);
-      window.addEventListener('orientationchange', () => setTimeout(updateLayout, 80));
+      window.addEventListener('orientationchange', () => {
+        // orientationchange 触发时 viewport 可能还没更新，延迟两次确保准确
+        setTimeout(updateLayout, 80);
+        setTimeout(updateLayout, 300);
+      });
+      // Screen Orientation API（比 orientationchange 更可靠）
+      if (screen.orientation?.addEventListener) {
+        screen.orientation.addEventListener('change', () => {
+          setTimeout(updateLayout, 80);
+          setTimeout(updateLayout, 300);
+        });
+      }
 
       for (const button of document.querySelectorAll?.('.dpad') || []) {
         const name = button.dataset.key;

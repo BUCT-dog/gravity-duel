@@ -17,7 +17,7 @@ const {
   stepRoom,
 } = require('./game-engine');
 
-const BROADCAST_MS = 50;
+const BROADCAST_MS = 67;
 const RECONNECT_GRACE_MS = 10_000;
 const FINISHED_ROOM_TTL_MS = 60_000;
 const MAX_CATCH_UP_STEPS = 8;
