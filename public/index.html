@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>🪐 引力对决 Gravity Duel</title>
+<style>
+  :root {
+    --bg: #08081a; --surface: #14142c;
+    --text: #e0e0f0; --dim: rgba(255,255,255,0.45);
+    --blue: #4da6ff; --red: #ff5555; --gold: #f9c74f;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: var(--bg);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    user-select: none; -webkit-user-select: none;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    display: flex; justify-content: center; align-items: center;
+  }
+
+  #app {
+    position: relative;
+    width: 1200px; height: 700px;
+    max-width: 100vw; max-height: 100vh;
+    transform-origin: center center;
+  }
+  canvas {
+    display: block; width: 100%; height: 100%;
+    border-radius: 14px;
+    box-shadow: 0 0 100px rgba(60,100,255,0.12), 0 0 30px rgba(0,0,0,0.6);
+  }
+
+  /* === 连接状态 === */
+  #connBadge {
+    position: absolute; top: 14px; right: 20px; z-index: 30;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+    padding: 5px 12px; border-radius: 20px;
+    pointer-events: none; transition: all 0.3s;
+  }
+  #connBadge.online  { background: rgba(16,185,129,0.2); color: #10b981; }
+  #connBadge.offline { background: rgba(239,68,68,0.2); color: #ef4444; }
+
+  /* === 虚拟摇杆（手机） === */
+  #joystickZone {
+    display: none;
+    position: absolute; bottom: 0; left: 0;
+    width: 45%; height: 100%;
+    z-index: 15;
+  }
+  #joystickBase {
+    position: absolute;
+    width: 130px; height: 130px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.06);
+    border: 2px solid rgba(255,255,255,0.18);
+    bottom: 40px; left: 50px;
+    pointer-events: none;
+  }
+  #joystickThumb {
+    position: absolute;
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.25);
+    box-shadow: 0 0 20px rgba(255,255,255,0.15);
+    pointer-events: none;
+    transition: none;
+  }
+  .mobile #joystickZone { display: block; }
+  .mobile #joystickBase { display: block; }
+  .mobile #joystickThumb { display: block; }
+
+  /* === 覆盖层 === */
+  .overlay {
+    position: absolute; inset: 0;
+    display: flex; justify-content: center; align-items: center;
+    pointer-events: none; z-index: 10;
+  }
+  .overlay.active { pointer-events: auto; }
+
+  /* === 面板 === */
+  .panel {
+    background: rgba(16,16,38,0.94); backdrop-filter: blur(18px);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 22px; padding: 34px 36px;
+    text-align: center; color: var(--text);
+    box-shadow: 0 24px 80px rgba(0,0,0,0.55);
+    max-width: 420px; width: 90%;
+    animation: fadeUp 0.35s ease-out;
+    max-height: 90vh; overflow-y: auto;
+  }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .panel h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
+  .panel .icon { font-size: 40px; display: block; margin-bottom: 2px; }
+  .panel .sub { font-size: 13px; color: var(--dim); margin-bottom: 22px; line-height: 1.5; }
+
+  /* === 按钮 === */
+  .btn {
+    display: inline-block; padding: 13px 28px; border-radius: 50px;
+    font-size: 15px; font-weight: 600; cursor: pointer; border: none;
+    color: #fff; letter-spacing: 0.03em;
+    transition: all 0.2s; position: relative;
+    font-family: inherit; touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn:hover { transform: translateY(-2px); box-shadow: 0 10px 28px rgba(0,0,0,0.35); }
+  .btn:active { transform: translateY(0); }
+  .btn-primary { background: linear-gradient(135deg, #4da6ff, #6c5ce7); }
+  .btn-danger  { background: linear-gradient(135deg, #ff5555, #e74c3c); }
+  .btn-ghost {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.75);
+  }
+  .btn-block { display: block; width: 100%; }
+  .btn + .btn { margin-top: 9px; }
+  .btn:disabled { opacity: 0.4; pointer-events: none; }
+
+  /* === 输入 === */
+  .input-row { display: flex; gap: 8px; margin: 14px 0; }
+  .input-row input {
+    flex: 1; padding: 13px 16px; border-radius: 50px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.04); color: #fff;
+    font-size: 18px; text-align: center; letter-spacing: 0.18em;
+    text-transform: uppercase; outline: none; font-family: inherit;
+    transition: border-color 0.2s;
+  }
+  .input-row input:focus { border-color: var(--blue); }
+  .input-row input::placeholder { color: rgba(255,255,255,0.2); letter-spacing: 0.03em; font-size: 14px; }
+
+  /* === 房间码 === */
+  .room-code-big {
+    font-size: 52px; font-weight: 900; letter-spacing: 0.16em;
+    color: var(--gold); text-shadow: 0 0 36px rgba(249,199,79,0.4);
+    margin: 8px 0; font-variant-numeric: tabular-nums;
+  }
+  .share-link {
+    font-size: 12px; color: var(--dim); margin: 6px 0 16px;
+    word-break: break-all;
+  }
+  .copied-pop {
+    display: inline-block; font-size: 12px; color: #10b981;
+    margin-left: 8px; opacity: 0; transition: opacity 0.2s;
+  }
+  .copied-pop.show { opacity: 1; }
+
+  /* === HUD === */
+  #hud {
+    position: absolute; top: 14px; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0 20px; z-index: 5; pointer-events: none;
+  }
+  .hp-row {
+    display: flex; align-items: center; gap: 6px; min-width: 140px;
+  }
+  .hp-label {
+    font-size: 11px; font-weight: 700; color: #fff;
+    text-shadow: 0 0 8px rgba(255,255,255,0.4); white-space: nowrap;
+  }
+  .hp-track {
+    width: 120px; height: 7px; border-radius: 7px;
+    background: rgba(255,255,255,0.08); overflow: hidden;
+  }
+  .hp-fill {
+    height: 100%; border-radius: 7px; transition: width 0.35s ease-out;
+  }
+  .hp-fill.p1 { background: linear-gradient(90deg, #4da6ff, #8167f0); box-shadow: 0 0 10px rgba(77,166,255,0.5); }
+  .hp-fill.p2 { background: linear-gradient(90deg, #ff5555, #e74c3c); box-shadow: 0 0 10px rgba(255,85,85,0.5); }
+
+  #timerDisplay {
+    font-size: 24px; font-weight: 800; color: #fff;
+    text-shadow: 0 0 14px rgba(255,255,255,0.35);
+    font-variant-numeric: tabular-nums; min-width: 56px; text-align: center;
+  }
+  #timerDisplay.urgent { color: #ff5555; animation: pulse 0.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+
+  /* === Toast === */
+  #toast {
+    position: absolute; top: 46%; left: 50%; transform: translate(-50%,-50%);
+    font-size: 32px; font-weight: 900; color: #fff;
+    text-shadow: 0 0 40px rgba(255,255,255,0.7);
+    z-index: 25; pointer-events: none; opacity: 0;
+    transition: opacity 0.25s; text-align: center;
+  }
+  #toast.show { opacity: 1; }
+
+  .tips {
+    margin-top: 16px; font-size: 11px; color: rgba(255,255,255,0.22);
+    line-height: 1.7; text-align: left; padding-left: 8px;
+  }
+  .tips span { color: rgba(255,255,255,0.4); }
+
+  .hidden { display: none !important; }
+
+  /* === 手机专用提示 === */
+  #mobileHint {
+    display: none;
+    position: absolute; bottom: 20px; right: 20px; z-index: 8;
+    font-size: 11px; color: rgba(255,255,255,0.3);
+    pointer-events: none; text-align: right; line-height: 1.6;
+  }
+  .mobile #mobileHint { display: block; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <canvas id="c"></canvas>
+
+  <!-- 连接状态 -->
+  <div id="connBadge" class="offline">● 未连接</div>
+
+  <!-- 虚拟摇杆 -->
+  <div id="joystickZone">
+    <div id="joystickBase"></div>
+    <div id="joystickThumb"></div>
+  </div>
+
+  <!-- 手机提示 -->
+  <div id="mobileHint">← 摇杆移动<br>放手 = 停止</div>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div class="hp-row">
+      <span class="hp-label" style="color:#4da6ff;">🔵 我方</span>
+      <div class="hp-track"><div class="hp-fill p1" id="hp1" style="width:100%"></div></div>
+    </div>
+    <div id="timerDisplay">3:00</div>
+    <div class="hp-row" style="flex-direction:row-reverse;">
+      <span class="hp-label" style="color:#ff5555;text-align:right;">对手 🔴</span>
+      <div class="hp-track"><div class="hp-fill p2" id="hp2" style="width:100%"></div></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <!-- 主菜单 -->
+  <div class="overlay active" id="menuOverlay">
+    <div class="panel">
+      <h1><span class="icon">🪐</span>引力对决</h1>
+      <div class="sub">操纵行星引力场，甩陨石摧毁对手！</div>
+      <button class="btn btn-primary btn-block" id="btnCreate" onclick="createRoom()">🎮 创建房间</button>
+      <div style="margin:10px 0;color:rgba(255,255,255,0.2);font-size:12px;">— 或输入房间码加入 —</div>
+      <div class="input-row">
+        <input id="joinInput" placeholder="房间码" maxlength="4" autocomplete="off" autocorrect="off" autocapitalize="characters" inputmode="text">
+        <button class="btn btn-ghost" id="btnJoin" onclick="joinRoom()">加入</button>
+      </div>
+      <div class="tips">
+        <span>🕹️</span> PC: WASD/方向键 &nbsp;|&nbsp; 📱 手机: 虚拟摇杆<br>
+        <span>🧲</span> 引力圈捕获陨石 → 甩向对手<br>
+        <span>💥</span> 5条命 / 3分钟
+      </div>
+    </div>
+  </div>
+
+  <!-- 等待 -->
+  <div class="overlay hidden" id="waitOverlay">
+    <div class="panel">
+      <h1>⏳ 等待对手</h1>
+      <div class="room-code-big" id="roomCodeDisplay"></div>
+      <div class="share-link" id="shareLink"></div>
+      <button class="btn btn-primary btn-block" onclick="copyShare()">📋 复制邀请链接<span class="copied-pop" id="copiedPop">✓ 已复制</span></button>
+      <button class="btn btn-ghost btn-block" onclick="copyCode()">📋 仅复制房间码</button>
+      <button class="btn btn-ghost btn-block" onclick="leaveWait()" style="margin-top:4px;">取消</button>
+    </div>
+  </div>
+
+  <!-- 游戏结束 -->
+  <div class="overlay hidden" id="endOverlay">
+    <div class="panel" id="endPanel"></div>
+  </div>
+</div>
+
+<script>
+// ===== 常量 =====
+const W = 1200, H = 700, PR = 38, GR = 230, MAX_HP = 5;
+
+// ===== DOM =====
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = W; canvas.height = H;
+
+const connBadge = document.getElementById('connBadge');
+const hud       = document.getElementById('hud');
+const hp1       = document.getElementById('hp1');
+const hp2       = document.getElementById('hp2');
+const timerDisp = document.getElementById('timerDisplay');
+const toast     = document.getElementById('toast');
+const menuOv    = document.getElementById('menuOverlay');
+const waitOv    = document.getElementById('waitOverlay');
+const endOv     = document.getElementById('endOverlay');
+const endPanel  = document.getElementById('endPanel');
+const app       = document.getElementById('app');
+const joystickBase  = document.getElementById('joystickBase');
+const joystickThumb = document.getElementById('joystickThumb');
+const joystickZone  = document.getElementById('joystickZone');
+
+// ===== 检测移动端 =====
+const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ||
+                 ('ontouchstart' in window && window.innerWidth < 1024);
+if (isMobile) {
+  document.body.classList.add('mobile');
+  // 缩放适配手机屏幕
+  const scale = Math.min(window.innerWidth / W, window.innerHeight / H) * 0.95;
+  app.style.width = W + 'px';
+  app.style.height = H + 'px';
+  app.style.transform = `scale(${scale})`;
+}
+
+// ===== 状态 =====
+let ws = null;
+let myNum = 0;
+let myRoom = '';
+let gs = null;
+let keys = { up: false, down: false, left: false, right: false };
+let prevKeys = { ...keys };
+let effects = [];
+let screenShake = 0;
+let connectionOk = false;
+let trailHistory = [];
+let stars = Array.from({length:180}, () => ({
+  x: Math.random()*W, y: Math.random()*H,
+  r: Math.random()*1.6+0.2,
+  phase: Math.random()*Math.PI*2, speed: Math.random()*0.018+0.004,
+}));
+
+// ===== 虚拟摇杆 =====
+let joystickActive = false;
+let joystickId = null;
+let joystickCX = 0, joystickCY = 0;
+let joystickMaxR = 55;
+
+function updateJoystickUI() {
+  const baseRect = joystickBase.getBoundingClientRect();
+  joystickCX = baseRect.left + baseRect.width/2;
+  joystickCY = baseRect.top + baseRect.height/2;
+  joystickMaxR = baseRect.width/2 - 30;
+}
+
+joystickZone.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (!joystickActive) {
+      joystickActive = true;
+      joystickId = t.identifier;
+      updateJoystickUI();
+      moveThumb(t.clientX, t.clientY);
+    }
+  }
+}, { passive: false });
+
+joystickZone.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier === joystickId) {
+      moveThumb(t.clientX, t.clientY);
+    }
+  }
+}, { passive: false });
+
+joystickZone.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier === joystickId) {
+      joystickActive = false;
+      joystickId = null;
+      resetThumb();
+    }
+  }
+}, { passive: false });
+
+joystickZone.addEventListener('touchcancel', () => {
+  joystickActive = false;
+  joystickId = null;
+  resetThumb();
+});
+
+function moveThumb(cx, cy) {
+  let dx = cx - joystickCX;
+  let dy = cy - joystickCY;
+  const dist = Math.hypot(dx, dy);
+  if (dist > joystickMaxR) {
+    dx = dx / dist * joystickMaxR;
+    dy = dy / dist * joystickMaxR;
+  }
+  joystickThumb.style.left = (joystickCX + dx - 28) + 'px';
+  joystickThumb.style.top  = (joystickCY + dy - 28) + 'px';
+
+  // 映射到方向键
+  const deadZone = 10;
+  keys.up    = dy < -deadZone;
+  keys.down  = dy > deadZone;
+  keys.left  = dx < -deadZone;
+  keys.right = dx > deadZone;
+}
+
+function resetThumb() {
+  joystickThumb.style.left = (joystickCX - 28) + 'px';
+  joystickThumb.style.top  = (joystickCY - 28) + 'px';
+  keys = { up: false, down: false, left: false, right: false };
+}
+
+// 窗口大小变化时更新摇杆位置
+window.addEventListener('resize', () => {
+  if (isMobile) {
+    const scale = Math.min(window.innerWidth / W, window.innerHeight / H) * 0.95;
+    app.style.transform = `scale(${scale})`;
+  }
+  if (joystickActive) updateJoystickUI();
+});
+
+// ===== WebSocket =====
+function connectWS() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}`);
+
+  ws.onopen = () => {
+    connectionOk = true;
+    connBadge.textContent = '● 已连接';
+    connBadge.className = 'online';
+    const pending = sessionStorage.getItem('pendingJoin');
+    if (pending) { sessionStorage.removeItem('pendingJoin'); joinRoomWithCode(pending); }
+  };
+
+  ws.onclose = () => {
+    connectionOk = false;
+    connBadge.textContent = '● 断开，重连中…';
+    connBadge.className = 'offline';
+    setTimeout(connectWS, 2500);
+  };
+
+  ws.onerror = () => {};
+
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    switch (m.type) {
+      case 'room_created':
+        myNum = m.player; myRoom = m.roomId;
+        document.getElementById('roomCodeDisplay').textContent = m.roomId;
+        document.getElementById('shareLink').innerHTML =
+          `分享链接：<br><code style="font-size:11px;color:rgba(255,255,255,0.5);word-break:break-all;">${location.origin}?join=${m.roomId}</code>`;
+        menuOv.classList.add('hidden');
+        waitOv.classList.remove('hidden');
+        sessionStorage.setItem('myRoom', m.roomId);
+        sessionStorage.setItem('myNum', m.player);
+        break;
+
+      case 'joined':
+        myNum = m.player; myRoom = m.roomId;
+        menuOv.classList.add('hidden');
+        waitOv.classList.add('hidden');
+        sessionStorage.setItem('myRoom', m.roomId);
+        sessionStorage.setItem('myNum', m.player);
+        break;
+
+      case 'game_start':
+        hud.classList.remove('hidden');
+        waitOv.classList.add('hidden');
+        endOv.classList.remove('active');
+        endOv.classList.add('hidden');
+        effects = []; screenShake = 0; trailHistory = [];
+        showToast(myNum === 1 ? '🔵 蓝色行星' : '🔴 红色行星');
+        break;
+
+      case 'game_state':
+        updateTrails(m);
+        gs = m;
+        break;
+
+      case 'game_over':
+        gs = m;
+        showEnd(m.winner);
+        break;
+
+      case 'hit':
+        effects.push({ x: m.x, y: m.y, life: 1, player: m.player });
+        if (m.player === myNum) {
+          screenShake = 14;
+          playBeep(180, 0.18, 'sawtooth');
+          setTimeout(() => playBeep(120, 0.2, 'triangle'), 100);
+        } else {
+          playBeep(700, 0.08, 'square');
+          setTimeout(() => playBeep(900, 0.06, 'square'), 60);
+        }
+        break;
+
+      case 'rematch_requested':
+        showToast('对手也想再来一局');
+        break;
+
+      case 'opponent_disconnected':
+        showToast('对手断开了连接');
+        setTimeout(() => {
+          endPanel.innerHTML = '<h1>🏆</h1><p style="font-size:18px;">对手断开连接</p><p style="color:var(--dim);">你赢了！</p><button class="btn btn-primary btn-block" onclick="backToMenu()">返回大厅</button>';
+          endOv.classList.remove('hidden'); endOv.classList.add('active'); hud.classList.add('hidden');
+        }, 2000);
+        break;
+
+      case 'error':
+        showToast(m.message);
+        break;
+    }
+  };
+}
+
+// ===== 轨迹 =====
+function updateTrails(state) {
+  const nh = [];
+  for (let i = 0; i < state.asteroids.length; i++) {
+    const a = state.asteroids[i];
+    let bestI = -1, bestD = 1e9;
+    for (let j = 0; j < trailHistory.length; j++) {
+      const lp = trailHistory[j].points.at(-1);
+      if (!lp) continue;
+      const d = Math.hypot(a.x-lp.x, a.y-lp.y);
+      if (d < bestD) { bestD = d; bestI = j; }
+    }
+    if (bestI >= 0 && bestD < 60) {
+      const e = trailHistory[bestI];
+      e.points.push({ x: a.x, y: a.y });
+      if (e.points.length > 10) e.points.shift();
+      e.id = i; nh.push(e);
+    } else {
+      nh.push({ id: i, points: [{ x: a.x, y: a.y }] });
+    }
+  }
+  trailHistory = nh;
+}
+
+// ===== 操作 =====
+function createRoom() {
+  if (!connectionOk) { connectWS(); setTimeout(createRoom, 400); return; }
+  ws.send(JSON.stringify({ type: 'create_room' }));
+}
+
+function joinRoom() {
+  const code = document.getElementById('joinInput').value.trim().toUpperCase();
+  if (!code) return;
+  if (!connectionOk) { connectWS(); sessionStorage.setItem('pendingJoin', code); setTimeout(joinRoom, 400); return; }
+  joinRoomWithCode(code);
+}
+
+function joinRoomWithCode(code) {
+  if (!connectionOk) { connectWS(); setTimeout(() => joinRoomWithCode(code), 400); return; }
+  ws.send(JSON.stringify({ type: 'join_room', roomId: code }));
+}
+
+function copyShare() {
+  const link = `${location.origin}?join=${myRoom}`;
+  copyText(link);
+  const el = document.getElementById('copiedPop');
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+function copyCode() {
+  copyText(myRoom);
+  showToast('已复制房间码！');
+}
+
+function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+  } else {
+    fallbackCopy(text);
+  }
+}
+
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.focus(); ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+}
+
+function leaveWait() {
+  if (ws) { ws.close(); ws = null; }
+  gs = null; myRoom = ''; myNum = 0;
+  hud.classList.add('hidden'); waitOv.classList.add('hidden');
+  menuOv.classList.remove('hidden');
+  sessionStorage.removeItem('myRoom'); sessionStorage.removeItem('myNum');
+  connectWS();
+}
+
+function backToMenu() {
+  if (ws) { ws.close(); ws = null; }
+  gs = null; myRoom = ''; myNum = 0;
+  hud.classList.add('hidden'); waitOv.classList.add('hidden');
+  endOv.classList.remove('active'); endOv.classList.add('hidden'); menuOv.classList.remove('hidden');
+  sessionStorage.removeItem('myRoom'); sessionStorage.removeItem('myNum');
+  connectWS();
+}
+
+function rematch() {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'rematch' }));
+    endOv.classList.remove('active');
+    endOv.classList.add('hidden');
+  }
+}
+
+function showEnd(winner) {
+  hud.classList.add('hidden'); endOv.classList.remove('hidden'); endOv.classList.add('active');
+  const m = { win: ['🎉','你赢了！','引力至尊！','var(--gold)'],
+              lose:['💀','你输了','再来一局！',''],
+              draw:['🤝','平局','旗鼓相当！',''] }[winner===myNum?'win':winner===0?'draw':'lose'];
+  endPanel.innerHTML = `<h1>${m[0]}</h1><p style="font-size:21px;font-weight:700;${m[3]?'color:'+m[3]:''}">${m[1]}</p><p style="color:var(--dim);">${m[2]}</p>
+    <button class="btn btn-primary btn-block" onclick="rematch()">🔄 再来一局</button>
+    <button class="btn btn-ghost btn-block" onclick="backToMenu()">退出</button>`;
+}
+
+// ===== Toast =====
+let toastTmr;
+function showToast(text) {
+  clearTimeout(toastTmr);
+  toast.textContent = text; toast.classList.add('show');
+  toastTmr = setTimeout(() => toast.classList.remove('show'), 2200);
+}
+
+// ===== 音频 =====
+let actx = null;
+function ac() { if (!actx) actx = new (window.AudioContext||window.webkitAudioContext)(); return actx; }
+function playBeep(freq, dur, type) {
+  try {
+    const a = ac(); const o = a.createOscillator(); const g = a.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.12, a.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, a.currentTime+dur);
+    o.connect(g); g.connect(a.destination);
+    o.start(); o.stop(a.currentTime+dur);
+  } catch(_) {}
+}
+
+// ===== PC 键盘 =====
+const km = {};
+window.addEventListener('keydown', e => {
+  km[e.code] = true;
+  if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+});
+window.addEventListener('keyup', e => { km[e.code] = false; });
+
+function readKeys() {
+  // 摇杆已设置 keys（手机），PC 键盘叠加
+  if (!joystickActive) {
+    keys = {
+      up:    !!(km['KeyW']    || km['ArrowUp']),
+      down:  !!(km['KeyS']    || km['ArrowDown']),
+      left:  !!(km['KeyA']    || km['ArrowLeft']),
+      right: !!(km['KeyD']    || km['ArrowRight']),
+    };
+  }
+}
+
+setInterval(() => {
+  readKeys();
+  const ch = keys.up!==prevKeys.up || keys.down!==prevKeys.down ||
+             keys.left!==prevKeys.left || keys.right!==prevKeys.right;
+  if (ch && ws?.readyState===WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type:'input', keys }));
+    prevKeys = { ...keys };
+  }
+}, 30);
+
+// ===== 演示陨石（无游戏时背景动画） =====
+let demoAsteroids = [];
+function initDemoAsteroids() {
+  demoAsteroids = [];
+  for (let i = 0; i < 12; i++) {
+    demoAsteroids.push({
+      x: Math.random()*W, y: Math.random()*H,
+      vx: (Math.random()-0.5)*2.5, vy: (Math.random()-0.5)*2.5,
+      r: 5+Math.random()*8,
+      trail: [],
+    });
+  }
+}
+initDemoAsteroids();
+setInterval(() => {
+  if (gs) return; // 有游戏状态就不跑演示
+  for (const a of demoAsteroids) {
+    a.x += a.vx; a.y += a.vy;
+    if (a.x<-50||a.x>W+50) a.vx*=-1;
+    if (a.y<-50||a.y>H+50) a.vy*=-1;
+    a.trail.push({x:a.x, y:a.y});
+    if (a.trail.length>5) a.trail.shift();
+  }
+}, 33);
+
+// ===== 渲染 =====
+function drawStars() {
+  for (const s of stars) {
+    s.phase += s.speed;
+    const a = 0.35 + Math.sin(s.phase) * 0.35;
+    ctx.fillStyle = `rgba(255,255,255,${a})`;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+function drawGravityField(x, y, color) {
+  const t = Date.now()/1000;
+  for (let i = 0; i < 3; i++) {
+    const r = GR - i*7;
+    const a = 0.05 + Math.sin(t*2.5+i)*0.025;
+    ctx.strokeStyle = color.replace('0.22', String(a));
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke();
+  }
+  const grad = ctx.createRadialGradient(x, y, PR, x, y, GR);
+  grad.addColorStop(0, color.replace('0.22', '0.12'));
+  grad.addColorStop(0.45, color.replace('0.22', '0.03'));
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(x, y, GR, 0, Math.PI*2); ctx.fill();
+}
+
+function drawPlanet(x, y, color, isMe) {
+  const gg = ctx.createRadialGradient(x, y, PR*0.5, x, y, PR*2.4);
+  gg.addColorStop(0, color); gg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = gg; ctx.beginPath(); ctx.arc(x, y, PR*2.4, 0, Math.PI*2); ctx.fill();
+
+  const bg = ctx.createRadialGradient(x-9, y-11, PR*0.15, x, y, PR);
+  bg.addColorStop(0, 'rgba(255,255,255,0.45)');
+  bg.addColorStop(0.25, color);
+  bg.addColorStop(1, 'rgba(0,0,0,0.55)');
+  ctx.fillStyle = bg; ctx.beginPath(); ctx.arc(x, y, PR, 0, Math.PI*2); ctx.fill();
+
+  ctx.strokeStyle = color.replace('0.9', '0.45');
+  ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(x, y, PR+2, 0, Math.PI*2); ctx.stroke();
+
+  if (isMe) {
+    const t = Date.now()/1000;
+    for (let i = 0; i < 3; i++) {
+      const angle = t*2 + i*Math.PI*2/3;
+      const rx = x + Math.cos(angle)*(PR+16+Math.sin(t*3)*4);
+      const ry = y + Math.sin(angle)*(PR+16+Math.sin(t*3)*4);
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.beginPath(); ctx.arc(rx, ry, 3.5, 0, Math.PI*2); ctx.fill();
+    }
+  }
+}
+
+function drawAsteroid(ast, trailPts) {
+  if (trailPts && trailPts.length > 1) {
+    for (let i = 1; i < trailPts.length; i++) {
+      const a = i/trailPts.length*0.35;
+      ctx.strokeStyle = `rgba(255,200,140,${a})`;
+      ctx.lineWidth = ast.r*(i/trailPts.length)*1.6;
+      ctx.beginPath();
+      ctx.moveTo(trailPts[i-1].x, trailPts[i-1].y);
+      ctx.lineTo(trailPts[i].x, trailPts[i].y);
+      ctx.stroke();
+    }
+  }
+  const g = ctx.createRadialGradient(ast.x-1, ast.y-1, ast.r*0.08, ast.x, ast.y, ast.r);
+  g.addColorStop(0, 'rgba(255,240,215,0.9)');
+  g.addColorStop(0.55, 'rgba(170,130,90,0.65)');
+  g.addColorStop(1, 'rgba(70,40,25,0.45)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(ast.x, ast.y, ast.r, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  ctx.beginPath(); ctx.arc(ast.x-ast.r*0.28, ast.y-ast.r*0.32, ast.r*0.33, 0, Math.PI*2); ctx.fill();
+}
+
+function drawEffects() {
+  for (let i = effects.length-1; i >= 0; i--) {
+    const e = effects[i];
+    e.life -= 0.022;
+    if (e.life <= 0) { effects.splice(i,1); continue; }
+    const rgb = e.player===1?'77,166,255':'255,85,85';
+    for (let j=0; j<18; j++) {
+      const ang = j/18*Math.PI*2 + (1-e.life)*3.5;
+      const d = (1-e.life)*75;
+      ctx.fillStyle = `rgba(${rgb},${e.life})`;
+      ctx.beginPath(); ctx.arc(e.x+Math.cos(ang)*d, e.y+Math.sin(ang)*d, e.life*3.5, 0, Math.PI*2); ctx.fill();
+    }
+    const fg = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, 45*e.life);
+    fg.addColorStop(0, `rgba(255,255,255,${e.life*0.7})`);
+    fg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = fg; ctx.beginPath(); ctx.arc(e.x, e.y, 45*e.life, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#08081c'; ctx.fillRect(0, 0, W, H);
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.015)'; ctx.lineWidth = 1;
+  for (let x=0; x<W; x+=60) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for (let y=0; y<H; y+=60) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+  drawStars();
+
+  let sx=0, sy=0;
+  if (screenShake > 0) {
+    sx = (Math.random()-0.5)*screenShake*2;
+    sy = (Math.random()-0.5)*screenShake*2;
+    screenShake *= 0.84;
+    if (screenShake < 0.3) screenShake = 0;
+  }
+
+  ctx.save(); ctx.translate(sx, sy);
+
+  // 演示模式：无游戏时显示漂浮陨石
+  if (!gs || gs.state !== 'playing') {
+    for (const a of demoAsteroids) {
+      if (a.trail.length>1) {
+        for (let i=1;i<a.trail.length;i++) {
+          const alpha=i/a.trail.length*0.2;
+          ctx.strokeStyle = `rgba(255,200,140,${alpha})`;
+          ctx.lineWidth = a.r*(i/a.trail.length)*1.2;
+          ctx.beginPath();
+          ctx.moveTo(a.trail[i-1].x, a.trail[i-1].y);
+          ctx.lineTo(a.trail[i].x, a.trail[i].y);
+          ctx.stroke();
+        }
+      }
+      const gx = ctx.createRadialGradient(a.x-1, a.y-1, a.r*0.08, a.x, a.y, a.r);
+      gx.addColorStop(0, 'rgba(255,240,215,0.7)');
+      gx.addColorStop(0.55, 'rgba(170,130,90,0.45)');
+      gx.addColorStop(1, 'rgba(70,40,25,0.3)');
+      ctx.fillStyle = gx; ctx.beginPath(); ctx.arc(a.x, a.y, a.r, 0, Math.PI*2); ctx.fill();
+    }
+    // 演示标题行星
+    const dt = Date.now()/1000;
+    const demoPlanets = [
+      {x: W*0.28, y: H*0.5+Math.sin(dt)*40, c:'rgba(77,166,255,0.7)'},
+      {x: W*0.72, y: H*0.5+Math.cos(dt)*40, c:'rgba(255,85,85,0.7)'},
+    ];
+    for (const dp of demoPlanets) {
+      const dg = ctx.createRadialGradient(dp.x, dp.y, PR*0.5, dp.x, dp.y, PR*2);
+      dg.addColorStop(0, dp.c); dg.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = dg; ctx.beginPath(); ctx.arc(dp.x, dp.y, PR*2, 0, Math.PI*2); ctx.fill();
+      const db = ctx.createRadialGradient(dp.x-8, dp.y-10, PR*0.15, dp.x, dp.y, PR);
+      db.addColorStop(0, 'rgba(255,255,255,0.35)');
+      db.addColorStop(0.25, dp.c);
+      db.addColorStop(1, 'rgba(0,0,0,0.5)');
+      ctx.fillStyle = db; ctx.beginPath(); ctx.arc(dp.x, dp.y, PR, 0, Math.PI*2); ctx.fill();
+    }
+  }
+
+  if (gs && gs.state==='playing') {
+    for (const p of gs.players) {
+      drawGravityField(p.x, p.y, p.n===1?'rgba(77,166,255,0.22)':'rgba(255,85,85,0.22)');
+    }
+    for (const ast of gs.asteroids) {
+      const trail = trailHistory.find(t => {
+        const lp = t.points.at(-1);
+        return lp && Math.hypot(ast.x-lp.x, ast.y-lp.y) < 40;
+      });
+      drawAsteroid(ast, trail?.points);
+    }
+    for (const p of gs.players) {
+      drawPlanet(p.x, p.y, p.n===1?'rgba(77,166,255,0.9)':'rgba(255,85,85,0.9)', p.n===myNum);
+    }
+    drawEffects();
+  }
+
+  ctx.restore();
+
+  if (gs && gs.state==='playing') {
+    const me = gs.players.find(p=>p.n===myNum);
+    const op = gs.players.find(p=>p.n!==myNum);
+    if (me) hp1.style.width = Math.max(0, me.hp/MAX_HP*100)+'%';
+    if (op) hp2.style.width = Math.max(0, op.hp/MAX_HP*100)+'%';
+    const min = Math.floor(gs.time/60);
+    const sec = gs.time%60;
+    timerDisp.textContent = `${min}:${String(sec).padStart(2,'0')}`;
+    timerDisp.classList.toggle('urgent', gs.time <= 30);
+  }
+
+  requestAnimationFrame(render);
+}
+
+// ===== URL 参数加入 =====
+function checkURL() {
+  const code = new URLSearchParams(location.search).get('join');
+  if (code) {
+    document.getElementById('joinInput').value = code.toUpperCase();
+    setTimeout(joinRoom, 600);
+  }
+}
+
+// ===== 启动 =====
+connectWS();
+render();
+checkURL();
+canvas.addEventListener('click', () => ac());
+canvas.addEventListener('touchstart', () => ac(), { once: true });
+</script>
+</body>
+</html>
