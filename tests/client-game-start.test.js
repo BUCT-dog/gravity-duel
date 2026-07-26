@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const GravityMath = require('../public/game-math');
 
 class ClassList {
   constructor(...names) {
@@ -103,6 +104,8 @@ function loadClient({
   const windowObject = {
     innerWidth: width,
     innerHeight: height,
+    GravityMath,
+    name: '',
     addEventListener() {},
   };
   windowObject.window = windowObject;
@@ -115,11 +118,18 @@ function loadClient({
     WebSocket: FakeWebSocket,
     document: {
       body,
+      documentElement: makeElement(),
       getElementById: elementFor,
       createElement: () => makeElement(),
       execCommand: () => true,
+      querySelectorAll: () => [],
     },
-    navigator: { userAgent },
+    navigator: { userAgent, clipboard: { writeText: async () => {} } },
+    screen: { orientation: {} },
+    innerWidth: width,
+    innerHeight: height,
+    performance: { now: () => 0 },
+    prompt: () => null,
     location: {
       protocol: 'http:',
       hostname,
@@ -141,6 +151,7 @@ function loadClient({
   };
   windowObject.AudioContext = undefined;
   windowObject.webkitAudioContext = undefined;
+  windowObject.sessionStorage = sandbox.sessionStorage;
   vm.runInNewContext(clientScript, sandbox, { filename: htmlPath });
   return { body, elements, socket: FakeWebSocket.latest };
 }
@@ -154,7 +165,7 @@ test('local page warns that its rooms cannot be joined from a phone', () => {
   assert.match(warning.textContent, /Railway 公网网址/);
 });
 
-test('mobile portrait layout fills the dynamic viewport instead of shrinking the game', () => {
+test('mobile portrait gameplay fills the viewport and requests landscape', () => {
   const { body, elements } = loadClient({
     width: 390,
     height: 844,
@@ -163,8 +174,14 @@ test('mobile portrait layout fills the dynamic viewport instead of shrinking the
   const app = elements.get('app');
 
   assert.equal(body.classList.contains('mobile'), true);
-  assert.equal(app.style.width, '100vw');
-  assert.equal(app.style.height, '100dvh');
+  FakeWebSocket.latest.onmessage({
+    data: JSON.stringify({ type: 'room_created', roomId: 'ABCD', player: 1 }),
+  });
+  FakeWebSocket.latest.onmessage({ data: JSON.stringify({ type: 'game_start' }) });
+
+  assert.equal(Number.parseFloat(app.style.width), 390);
+  assert.equal(Number.parseFloat(app.style.height), 844);
+  assert.equal(body.classList.contains('portrait-mobile'), true);
   assert.equal(app.style.transform, 'none');
 });
 

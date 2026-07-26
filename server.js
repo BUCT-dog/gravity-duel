@@ -1,137 +1,409 @@
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
+'use strict';
+
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const http = require('node:http');
+const path = require('node:path');
 const WebSocket = require('ws');
+const {
+  FIXED_STEP_MS,
+  addPlayer,
+  buildState,
+  canJoinRoom,
+  createRoom,
+  emptyKeys,
+  sanitizeKeys,
+  startRound,
+  stepRoom,
+} = require('./game-engine');
 
-const W = 1200, H = 700, PR = 38, GR = 230, GS = 1200;
-const PLAYER_SPEED = 4.5, MAX_AST = 20, MAX_HP = 5, ROUND = 180;
-const PHYS_TICK = 33, CAST_TICK = 50; // 物理30fps, 广播20fps
+const BROADCAST_MS = 50;
+const RECONNECT_GRACE_MS = 10_000;
+const FINISHED_ROOM_TTL_MS = 60_000;
+const MAX_CATCH_UP_STEPS = 8;
+const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const PUBLIC_ROOT = path.resolve(__dirname, 'public');
+const MIME_TYPES = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.ico': 'image/x-icon',
+  '.js': 'application/javascript; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+};
 
-const MIME = {'.html':'text/html; charset=utf-8','.js':'application/javascript','.css':'text/css','.png':'image/png','.svg':'image/svg+xml','.ico':'image/x-icon'};
-const server = http.createServer((req, res) => {
-  const fp = path.join(__dirname, 'public', req.url === '/' ? 'index.html' : req.url);
-  fs.readFile(fp, (e, d) => {
-    if (e) { res.writeHead(404); res.end('Not Found'); return; }
-    res.writeHead(200, {'Content-Type': MIME[path.extname(fp)] || 'application/octet-stream'});
-    res.end(d);
-  });
-});
-
-const wss = new WebSocket.Server({ server });
-const rooms = new Map();
-const $ = Math; // shorthand
-
-function rid() { const c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<4;i++)s+=c[$.floor($.random()*c.length)]; return s; }
-
-function spawn(room) {
-  const side = $.floor($.random()*4); let x, y;
-  const tx = 180+$.random()*(W-360), ty = 100+$.random()*(H-200);
-  if(side===0){x=-30;y=$.random()*H}else if(side===1){x=W+30;y=$.random()*H}else if(side===2){x=$.random()*W;y=-30}else{x=$.random()*W;y=H+30}
-  const a = $.atan2(ty-y,tx-x)+($.random()-.5)*.8, sp = 2+$.random()*3;
-  room.asteroids.push({x,y,vx:$.cos(a)*sp,vy:$.sin(a)*sp,r:7+$.random()*7});
-}
-
-function tick(room) {
-  for (const p of room.players) {
-    if(!p.keys) continue;
-    let dx=0,dy=0;
-    if(p.keys.up)dy-=1; if(p.keys.down)dy+=1; if(p.keys.left)dx-=1; if(p.keys.right)dx+=1;
-    if(dx&&dy){dx*=.7071;dy*=.7071}
-    p.x = p.x+dx*PLAYER_SPEED; if(p.x<PR)p.x=PR; if(p.x>W-PR)p.x=W-PR;
-    p.y = p.y+dy*PLAYER_SPEED; if(p.y<PR)p.y=PR; if(p.y>H-PR)p.y=H-PR;
+function randomRoomId() {
+  let result = '';
+  for (let index = 0; index < 4; index += 1) {
+    result += ROOM_ALPHABET[crypto.randomInt(ROOM_ALPHABET.length)];
   }
-  for (const a of room.asteroids) {
-    for (const p of room.players) {
-      const d = $.hypot(a.x-p.x, a.y-p.y);
-      if(d<GR&&d>8){const f=GS/(d*d); a.vx+=((p.x-a.x)/d)*f; a.vy+=((p.y-a.y)/d)*f;}
-    }
-    const s=$.hypot(a.vx,a.vy); if(s>9){a.vx=a.vx/s*9; a.vy=a.vy/s*9;}
-    a.x+=a.vx; a.y+=a.vy;
+  return result;
+}
+
+function randomToken() {
+  return crypto.randomBytes(18).toString('base64url');
+}
+
+function send(ws, message) {
+  if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+}
+
+function broadcast(room, message, exceptPlayer = null) {
+  const payload = JSON.stringify(message);
+  for (const player of room.players) {
+    if (player === exceptPlayer || player.ws?.readyState !== WebSocket.OPEN) continue;
+    player.ws.send(payload);
   }
-  for (let i=room.asteroids.length-1;i>=0;i--) {
-    for (const p of room.players) {
-      if($.hypot(room.asteroids[i].x-p.x,room.asteroids[i].y-p.y)<PR+room.asteroids[i].r){
-        p.hp--; bc(room,{type:'hit',player:p.number,x:room.asteroids[i].x,y:room.asteroids[i].y});
-        room.asteroids.splice(i,1); break;
-      }
+}
+
+function staticHandler(request, response) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    response.writeHead(405, { Allow: 'GET, HEAD' });
+    response.end();
+    return;
+  }
+
+  let url;
+  try {
+    url = new URL(request.url, 'http://localhost');
+  } catch {
+    response.writeHead(400);
+    response.end('Bad Request');
+    return;
+  }
+
+  if (url.pathname === '/api/health') {
+    response.writeHead(200, {
+      'Cache-Control': 'no-store',
+      'Content-Type': 'application/json; charset=utf-8',
+    });
+    response.end(JSON.stringify({ ok: true, service: 'gravity-duel' }));
+    return;
+  }
+
+  let pathname;
+  try {
+    pathname = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname);
+  } catch {
+    response.writeHead(400);
+    response.end('Bad Request');
+    return;
+  }
+
+  const filePath = path.resolve(PUBLIC_ROOT, `.${pathname}`);
+  if (filePath !== PUBLIC_ROOT && !filePath.startsWith(`${PUBLIC_ROOT}${path.sep}`)) {
+    response.writeHead(403);
+    response.end('Forbidden');
+    return;
+  }
+
+  fs.readFile(filePath, (error, data) => {
+    if (error) {
+      response.writeHead(error.code === 'ENOENT' ? 404 : 500);
+      response.end(error.code === 'ENOENT' ? 'Not Found' : 'Internal Server Error');
+      return;
+    }
+    response.writeHead(200, {
+      'Cache-Control': 'no-cache',
+      'Content-Type': MIME_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    if (request.method === 'HEAD') response.end();
+    else response.end(data);
+  });
+}
+
+function createGravityServer() {
+  const server = http.createServer(staticHandler);
+  const wss = new WebSocket.Server({ server });
+  const rooms = new Map();
+
+  function uniqueRoomId() {
+    let id = randomRoomId();
+    while (rooms.has(id)) id = randomRoomId();
+    return id;
+  }
+
+  function finishRoom(room, winner, reason) {
+    if (room.state === 'ended') return;
+    room.state = 'ended';
+    room.winner = winner;
+    room.expiresAt = Date.now() + FINISHED_ROOM_TTL_MS;
+    broadcast(room, buildState(room));
+    broadcast(room, { type: 'game_over', winner, reason });
+    room.gameOverSent = true;
+  }
+
+  function detachWaitingMembership(membership) {
+    const { room, player } = membership;
+    if (!room || !player || room.state !== 'waiting') return;
+    rooms.delete(room.id);
+    player.connected = false;
+  }
+
+  function handleDisconnect(membership, closingSocket) {
+    const { room, player } = membership;
+    if (!room || !player || !player.connected) return;
+    if (player.ws !== closingSocket) return;
+
+    player.connected = false;
+    player.keys = emptyKeys();
+    player.ws = null;
+
+    if (room.state === 'waiting') {
+      rooms.delete(room.id);
+      return;
+    }
+
+    if (room.state === 'playing') {
+      room.state = 'paused';
+      room.pausedFrom = 'playing';
+      room.expiresAt = Date.now() + RECONNECT_GRACE_MS;
+      broadcast(room, {
+        type: 'opponent_connection_lost',
+        graceMs: RECONNECT_GRACE_MS,
+      }, player);
+    } else if (room.players.every(candidate => !candidate.connected)) {
+      rooms.delete(room.id);
     }
   }
-  room.asteroids=room.asteroids.filter(a=>a.x>-120&&a.x<W+120&&a.y>-120&&a.y<H+120);
-  room.spawnTimer-=PHYS_TICK;
-  if(room.spawnTimer<=0&&room.asteroids.length<MAX_AST){spawn(room); room.spawnTimer=800+$.random()*800;}
-  room.gameTimer-=PHYS_TICK/1000;
-  const dead=room.players.filter(p=>p.hp<=0);
-  if(dead.length>0){room.state='ended'; room.winner=room.players.find(p=>p.hp>0)?.number||0;}
-  else if(room.gameTimer<=0){room.state='ended'; const[a,b]=room.players; room.winner=a.hp>b.hp?a.number:b.hp>a.hp?b.number:0;}
-}
 
-function state(room) {
-  return {type:'game_state',ts:Date.now(),
-    players:room.players.map(p=>({n:p.number,x:p.x,y:p.y,hp:p.hp})),
-    asteroids:room.asteroids.map(a=>({x:a.x,y:a.y,vx:a.vx,vy:a.vy,r:a.r})),
-    time:$.max(0,$.ceil(room.gameTimer)), state:room.state, winner:room.winner};
-}
-
-function bc(room,msg){const d=JSON.stringify(msg); for(const p of room.players) if(p.ws.readyState===WebSocket.OPEN)p.ws.send(d);}
-
-let started=false;
-function loop(){
-  if(started)return; started=true;
-  setInterval(()=>{
-    const now=Date.now();
-    for(const room of rooms.values()){
-      if(room.state!=='playing')continue;
-      const dt=now-room.lastPhys; room.lastPhys=now;
-      for(let i=0;i<$.min($.round(dt/PHYS_TICK),4);i++)tick(room);
-      if(now-room.lastCast>=CAST_TICK){room.lastCast=now; bc(room,state(room)); if(room.state==='ended')bc(room,{type:'game_over',winner:room.winner});}
+  function processRoom(room, now) {
+    if (room.state === 'paused') {
+      if (room.expiresAt && now >= room.expiresAt) {
+        const survivor = room.players.find(player => player.connected);
+        finishRoom(room, survivor?.number || 0, 'opponent_disconnected');
+      }
+      return;
     }
-    for(const[id,room]of rooms) if(room.players.every(p=>p.ws.readyState>1))rooms.delete(id);
-  },PHYS_TICK);
+
+    if (room.state === 'ended') {
+      if (room.expiresAt && now >= room.expiresAt) rooms.delete(room.id);
+      return;
+    }
+
+    if (room.state !== 'playing') return;
+
+    const elapsed = Math.min(250, Math.max(0, now - room.lastUpdateAt));
+    room.lastUpdateAt = now;
+    room.accumulatorMs += elapsed;
+    let steps = 0;
+
+    while (
+      room.accumulatorMs >= FIXED_STEP_MS
+      && steps < MAX_CATCH_UP_STEPS
+      && room.state === 'playing'
+    ) {
+      const events = stepRoom(room);
+      for (const event of events) broadcast(room, event);
+      room.accumulatorMs -= FIXED_STEP_MS;
+      steps += 1;
+    }
+
+    if (steps === MAX_CATCH_UP_STEPS) room.accumulatorMs = Math.min(room.accumulatorMs, FIXED_STEP_MS);
+
+    if (now - room.lastBroadcastAt >= BROADCAST_MS || room.state === 'ended') {
+      room.lastBroadcastAt = now;
+      broadcast(room, buildState(room, now));
+    }
+
+    if (room.state === 'ended' && !room.gameOverSent) {
+      broadcast(room, { type: 'game_over', winner: room.winner, reason: 'round_complete' });
+      room.gameOverSent = true;
+      room.expiresAt = now + FINISHED_ROOM_TTL_MS;
+    }
+  }
+
+  const gameLoop = setInterval(() => {
+    const now = Date.now();
+    for (const room of rooms.values()) processRoom(room, now);
+  }, 8);
+  gameLoop.unref?.();
+
+  wss.on('connection', ws => {
+    ws.isAlive = true;
+    const membership = { room: null, player: null };
+
+    ws.on('pong', () => {
+      ws.isAlive = true;
+    });
+
+    ws.on('message', raw => {
+      let message;
+      try {
+        message = JSON.parse(raw);
+      } catch {
+        send(ws, { type: 'error', message: '消息格式无效' });
+        return;
+      }
+
+      if (!message || typeof message.type !== 'string') return;
+
+      if (message.type === 'ping') {
+        send(ws, {
+          type: 'pong',
+          clientTime: Number(message.clientTime) || 0,
+          serverTime: Date.now(),
+        });
+        return;
+      }
+
+      if (message.type === 'create_room') {
+        detachWaitingMembership(membership);
+        const room = createRoom({ id: uniqueRoomId() });
+        const player = addPlayer(room, {
+          number: 1,
+          ws,
+          token: randomToken(),
+        });
+        rooms.set(room.id, room);
+        membership.room = room;
+        membership.player = player;
+        send(ws, {
+          type: 'room_created',
+          roomId: room.id,
+          player: player.number,
+          sessionToken: player.token,
+        });
+        return;
+      }
+
+      if (message.type === 'join_room') {
+        const roomId = String(message.roomId || '').trim().toUpperCase();
+        const room = rooms.get(roomId);
+        if (!room) {
+          send(ws, { type: 'error', message: '房间不存在或已过期' });
+          return;
+        }
+        if (!canJoinRoom(room)) {
+          send(ws, {
+            type: 'error',
+            message: room.state === 'waiting' ? '房间已满' : '对局已经开始',
+          });
+          return;
+        }
+
+        detachWaitingMembership(membership);
+        const player = addPlayer(room, {
+          number: 2,
+          ws,
+          token: randomToken(),
+        });
+        membership.room = room;
+        membership.player = player;
+        send(ws, {
+          type: 'joined',
+          roomId: room.id,
+          player: player.number,
+          sessionToken: player.token,
+        });
+
+        startRound(room);
+        const now = Date.now();
+        room.lastUpdateAt = now;
+        room.lastBroadcastAt = now;
+        broadcast(room, { type: 'game_start' });
+        broadcast(room, buildState(room, now));
+        return;
+      }
+
+      if (message.type === 'resume_room') {
+        const roomId = String(message.roomId || '').trim().toUpperCase();
+        const room = rooms.get(roomId);
+        const player = room?.players.find(candidate => candidate.token === message.sessionToken);
+        const resumableState = room?.state === 'playing' || room?.state === 'paused';
+        if (
+          !room
+          || !player
+          || !resumableState
+          || (room.state === 'paused' && Date.now() >= room.expiresAt)
+        ) {
+          send(ws, { type: 'resume_failed' });
+          return;
+        }
+
+        const previousSocket = player.ws;
+        membership.room = room;
+        membership.player = player;
+        player.connected = true;
+        player.ws = ws;
+        player.keys = emptyKeys();
+        if (room.state === 'paused') room.state = room.pausedFrom || 'playing';
+        room.expiresAt = null;
+        room.lastUpdateAt = Date.now();
+        room.accumulatorMs = 0;
+        send(ws, {
+          type: 'resumed',
+          roomId: room.id,
+          player: player.number,
+        });
+        send(ws, buildState(room));
+        broadcast(room, { type: 'opponent_reconnected' }, player);
+        if (previousSocket && previousSocket !== ws) previousSocket.close(1000, 'session resumed elsewhere');
+        return;
+      }
+
+      const { room, player } = membership;
+      if (!room || !player) {
+        send(ws, { type: 'error', message: '请先创建或加入房间' });
+        return;
+      }
+
+      if (message.type === 'input') {
+        if (room.state !== 'playing') return;
+        const sequence = Number.isSafeInteger(message.seq) ? message.seq : player.lastInputSeq + 1;
+        if (sequence < player.lastInputSeq) return;
+        player.lastInputSeq = sequence;
+        player.keys = sanitizeKeys(message.keys);
+        return;
+      }
+
+      if (message.type === 'rematch') {
+        if (room.state !== 'ended' || !player.connected) return;
+        room.rematchVotes.add(player.number);
+        const opponent = room.players.find(candidate => candidate !== player);
+        send(opponent?.ws, { type: 'rematch_requested' });
+        if (room.rematchVotes.size < 2 || room.players.some(candidate => !candidate.connected)) return;
+
+        startRound(room);
+        const now = Date.now();
+        room.lastUpdateAt = now;
+        room.lastBroadcastAt = now;
+        broadcast(room, { type: 'game_start' });
+        broadcast(room, buildState(room, now));
+      }
+    });
+
+    ws.on('close', () => handleDisconnect(membership, ws));
+    ws.on('error', () => handleDisconnect(membership, ws));
+  });
+
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (!ws.isAlive) {
+        ws.terminate();
+        continue;
+      }
+      ws.isAlive = false;
+      ws.ping();
+    }
+  }, 15_000);
+  heartbeat.unref?.();
+
+  server.on('close', () => {
+    clearInterval(gameLoop);
+    clearInterval(heartbeat);
+  });
+
+  return { rooms, server, wss };
 }
 
-wss.on('connection',ws=>{
-  ws.isAlive=true; let room=null, player=null;
-  ws.on('pong',()=>{ws.isAlive=true});
-  ws.on('message',raw=>{
-    let m; try{m=JSON.parse(raw)}catch{return}
-    switch(m.type){
-      case'create_room':{
-        room={id:rid(),players:[],asteroids:[],state:'waiting',spawnTimer:0,gameTimer:ROUND,winner:null,lastPhys:0,lastCast:0};
-        while(rooms.has(room.id))room.id=rid(); rooms.set(room.id,room);
-        player={ws,number:1,hp:MAX_HP,x:180,y:H/2,keys:{}}; room.players.push(player);
-        ws.send(JSON.stringify({type:'room_created',roomId:room.id,player:1})); break;
-      }
-      case'join_room':{
-        const code=(m.roomId||'').toUpperCase(); room=rooms.get(code);
-        if(!room){ws.send(JSON.stringify({type:'error',message:'房间不存在'}));return}
-        if(room.players.length>=2){ws.send(JSON.stringify({type:'error',message:'房间已满'}));return}
-        player={ws,number:2,hp:MAX_HP,x:W-180,y:H/2,keys:{}}; room.players.push(player);
-        ws.send(JSON.stringify({type:'joined',roomId:room.id,player:2}));
-        room.state='playing'; room.lastPhys=Date.now(); room.lastCast=0; room.spawnTimer=300;
-        for(let i=0;i<8;i++)spawn(room); bc(room,{type:'game_start'}); loop(); break;
-      }
-      case'input':{if(player&&room?.state==='playing')player.keys=m.keys||{}; break;}
-      case'rematch':{
-        if(!room||room.state!=='ended')break;
-        if(!room.rv)room.rv=new Set(); room.rv.add(player?.number);
-        const o=room.players.find(p=>p!==player);
-        if(o?.ws.readyState===WebSocket.OPEN)o.ws.send(JSON.stringify({type:'rematch_requested'}));
-        if(room.rv.size>=2){room.rv.clear(); room.asteroids=[]; room.gameTimer=ROUND; room.winner=null;
-          room.state='playing'; room.lastPhys=Date.now(); room.lastCast=0; room.spawnTimer=300;
-          for(const p of room.players){p.hp=MAX_HP; p.keys={}; p.x=p.number===1?180:W-180; p.y=H/2;}
-          for(let i=0;i<8;i++)spawn(room); bc(room,{type:'game_start'});} break;
-      }
-    }
+if (require.main === module) {
+  const { server } = createGravityServer();
+  const port = Number(process.env.PORT) || 3000;
+  server.listen(port, '0.0.0.0', () => {
+    console.log(`\n  🚀 重力决斗已启动：http://localhost:${port}\n`);
   });
-  ws.on('close',()=>{
-    if(!room)return;
-    const o=room.players.find(p=>p!==player);
-    if(o?.ws.readyState===WebSocket.OPEN)o.ws.send(JSON.stringify({type:'opponent_disconnected'}));
-    if(room.players.every(p=>p===player||p.ws.readyState>1))rooms.delete(room.id);
-  });
-});
+}
 
-setInterval(()=>{wss.clients.forEach(ws=>{if(!ws.isAlive)return ws.terminate(); ws.isAlive=false; ws.ping();})},15000);
-
-const PORT=process.env.PORT||3000;
-server.listen(PORT,()=>console.log(`\n  🪐 引力对决 http://localhost:${PORT}\n`));
+module.exports = { createGravityServer };
