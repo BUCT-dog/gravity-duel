@@ -296,6 +296,12 @@
         rgba(2, 8, 12, .97);
     }
     .portrait-mobile.game-active #rotateOverlay { display: grid; }
+    @media (orientation: portrait) {
+      .mobile.game-active #rotateOverlay { display: grid; }
+    }
+    @media (orientation: landscape) {
+      .mobile.game-active #rotateOverlay { display: none !important; }
+    }
     .rotate-icon { font-size: 58px; animation: tilt 1.8s ease-in-out infinite; }
     @keyframes tilt { 0%,100% { transform: rotate(0); } 50% { transform: rotate(90deg); } }
     #rotateOverlay h2 { margin: 18px 0 8px; font-size: 24px; }
@@ -479,6 +485,7 @@
       let frameWindowStarted = performance.now();
       let fps = 0;
       let rtt = 0;
+      let serverLag = 0;  // 服务器→客户端总延迟（网络+处理）
       let shake = 0;
       let backgroundCache = null;
       const planetSprites = new Map();
@@ -703,13 +710,16 @@
           currentSnapshot = null;
           previousSnapshot = null;
           predictedPosition = null;
+          asteroidPreds.clear();
           resetInput();
           setPhase('playing');
         } else if (message.type === 'game_state') {
           previousSnapshot = currentSnapshot;
           currentSnapshot = message;
           snapshotReceivedAt = performance.now();
+          serverLag = Math.max(0, Date.now() - (message.ts || 0));
           reconcilePrediction(message);
+          reconcileAsteroids(message);
           updateHud(message);
         } else if (message.type === 'hit') {
           spawnHitEffect(message.x, message.y, message.player);
@@ -1040,6 +1050,47 @@
         return cache;
       }
 
+      // ====== 陨石本地预测 ======
+      const asteroidPreds = new Map(); // id → {x, y, vx, vy, r}
+
+      function predictAsteroids(dt) {
+        const bounded = Math.min(dt, 0.05);
+        for (const [, a] of asteroidPreds) {
+          a.x += a.vx * bounded;
+          a.y += a.vy * bounded;
+        }
+      }
+
+      function reconcileAsteroids(snapshot) {
+        const now = performance.now();
+        const serverIds = new Set();
+        for (const sa of snapshot.asteroids || []) {
+          serverIds.add(sa.id);
+          const local = asteroidPreds.get(sa.id);
+          if (!local) {
+            asteroidPreds.set(sa.id, { x: sa.x, y: sa.y, vx: sa.vx, vy: sa.vy, r: sa.r });
+            continue;
+          }
+          // 速度直接更新（引力在服务端算）
+          local.vx = sa.vx;
+          local.vy = sa.vy;
+          local.r = sa.r;
+          // 位置软修正
+          const err = Math.hypot(sa.x - local.x, sa.y - local.y);
+          if (err > 40) {
+            local.x = sa.x;
+            local.y = sa.y;
+          } else if (err > 4) {
+            local.x = GM.lerp(local.x, sa.x, 0.2);
+            local.y = GM.lerp(local.y, sa.y, 0.2);
+          }
+        }
+        // 清理服务端已移除的陨石
+        for (const [id] of asteroidPreds) {
+          if (!serverIds.has(id)) asteroidPreds.delete(id);
+        }
+      }
+
       function spawnHitEffect(x, y, hitPlayer) {
         const color = hitPlayer === playerNumber ? '#ff6f69' : '#75f2de';
         for (let index = 0; index < 11; index += 1) {
@@ -1085,7 +1136,7 @@
           fps = Math.round(frameCounter * 1000 / (now - frameWindowStarted));
           frameCounter = 0;
           frameWindowStarted = now;
-          elements.stats.textContent = `${fps} FPS · ${rtt || '--'} ms`;
+          elements.stats.textContent = `${fps} FPS · ⬆${serverLag || '--'}ms · ⬌${rtt || '--'}ms`;
         }
 
         ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
@@ -1115,23 +1166,30 @@
           const alpha = GM.clamp((now - snapshotReceivedAt) / SNAPSHOT_MS, 0, 1);
           const visual = GM.interpolateSnapshot(previousSnapshot, currentSnapshot, alpha);
           if (phase === 'playing') {
+            // 玩家预测
             if (!predictedPosition) {
               const mine = visual.players.find(player => player.n === playerNumber);
               if (mine) predictedPosition = { x: mine.x, y: mine.y };
             } else {
               predictedPosition = GM.integratePosition(predictedPosition, keys, dt);
             }
+            // 陨石预测（每帧本地推算，不依赖服务端频率）
+            predictAsteroids(dt);
           }
 
-          for (const asteroid of visual.asteroids) {
+          // 渲染陨石：优先用本地预测位置
+          for (const sa of visual.asteroids) {
+            const pred = asteroidPreds.get(sa.id);
+            const ax = pred ? pred.x : sa.x;
+            const ay = pred ? pred.y : sa.y;
             ctx.strokeStyle = 'rgba(207, 233, 225, .18)';
-            ctx.lineWidth = Math.max(1, asteroid.r * .24);
+            ctx.lineWidth = Math.max(1, sa.r * .24);
             ctx.beginPath();
-            ctx.moveTo(asteroid.x, asteroid.y);
-            ctx.lineTo(asteroid.x - asteroid.vx * 3.5, asteroid.y - asteroid.vy * 3.5);
+            ctx.moveTo(ax, ay);
+            ctx.lineTo(ax - sa.vx * 3.5, ay - sa.vy * 3.5);
             ctx.stroke();
-            const sprite = asteroidSprite(asteroid.r);
-            if (sprite) ctx.drawImage(sprite, asteroid.x - 20, asteroid.y - 20, 40, 40);
+            const sprite = asteroidSprite(sa.r);
+            if (sprite) ctx.drawImage(sprite, ax - 20, ay - 20, 40, 40);
           }
 
           for (const player of visual.players) {
